@@ -28,3 +28,5 @@ target/*
 .cargo/*
 .vscode/*
 rust-toolchain.toml
+
+/sdk/mod-api-stable/

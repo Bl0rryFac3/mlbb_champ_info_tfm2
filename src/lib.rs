@@ -3,24 +3,46 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-const MOD_ID: &str = "champ_attack_info_tfm2";
+const MOD_ID: &str = "mlbb_champ_info_tfm2";
 
 const TEXT_ASSET: &str = "asset/base/text/champion";
-const DEFAULTS_ASSET: &str = "asset/champ_attack_info_tfm2/text/defaults";
+const DEFAULTS_ASSET: &str = "asset/mlbb_champ_info_tfm2/text/defaults";
 
-const CARD_DESC: &str = "passive.data.desc";
-const CARD_ICON: &str = "passive.data.icon_slot.icon";
-const CARD_ICON_BG: &str = "passive.data.icon_slot.icon_bg";
-const CARD_NAME: &str = "passive.data.icon_slot.name";
-const CARD_RANK: &str = "passive.data.icon_slot.text";
-const PROBE: &str = "skill1.data.desc";
-const CARD: &str = "passive";
+// The two cards this mod adds. `passive` is a node the base layout already
+// ships but never shows; `attack` is a copy of it that this mod's layout
+// override adds. Both sit to the left of skill1.
+const CARD_PASSIVE: &str = "passive";
+const CARD_ATTACK: &str = "attack";
 const SKILL_CARDS: [&str; 3] = ["skill1", "skill2", "ult"];
 
-// Card-relative children resized when the row is rearranged
+// The i18n slot each extra card reads: description.<champion>.<FIELD>.
+const PASSIVE_FIELD: &str = "passive";
+const ATTACK_FIELD: &str = "attack";
+
+const PROBE: &str = "skill1.data.desc";
+
+// Card-relative children. The extra cards are reached by joining the card's
+// name, so the same paths work for both.
 const CARD_FULL_WIDTH: [&str; 4] = ["data", "data.icon_slot", "data.bar", "data.desc"];
-const CARD_CHILD_NAME: &str = "data.icon_slot.name";
-const CARD_CHILD_COOLTIME: &str = "data.icon_slot.cooltime";
+const CHILD_DESC: &str = "data.desc";
+const CHILD_ICON: &str = "data.icon_slot.icon";
+const CHILD_ICON_BG: &str = "data.icon_slot.icon_bg";
+const CHILD_NAME: &str = "data.icon_slot.name";
+const CHILD_RANK: &str = "data.icon_slot.text";
+const CHILD_COOLTIME: &str = "data.icon_slot.cooltime";
+
+/// Which of the two extra cards the selected champion has text for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Extras {
+    passive: bool,
+    attack: bool,
+}
+
+impl Extras {
+    fn count(self) -> usize {
+        self.passive as usize + self.attack as usize
+    }
+}
 
 // Card row geometry, matching tools/build_layout.py. The row is 1600px wide
 // either way: three cards is the base game's own spread, which is what the
@@ -33,6 +55,16 @@ const FOUR_CARDS: [(f32, f32); 4] = [
     (806.0, 391.0),
     (1209.0, 391.0),
 ];
+// Five cards is why this fork exists: the row is the same 1600px, so the cards
+// narrow to 312s with 10px gaps. Tighter than four, but a passive and an
+// attack side by side is worth it.
+const FIVE_CARDS: [(f32, f32); 5] = [
+    (0.0, 312.0),
+    (322.0, 312.0),
+    (644.0, 312.0),
+    (966.0, 312.0),
+    (1288.0, 312.0),
+];
 const CARD_PADDING: f32 = 20.0;
 const COOLTIME_WIDTH: f32 = 78.0;
 // Header columns. Three cards keeps the base game's icon/rank/cooldown/name;
@@ -41,7 +73,12 @@ const COOLTIME_WIDTH: f32 = 78.0;
 const NAME_X_WIDE: f32 = 192.0;
 const COOLTIME_X_WIDE: f32 = 104.0;
 const NAME_X_NARROW: f32 = 104.0;
-const NAME_TRAILING: f32 = 192.0;
+// Five cards, or any extra card: the rank chip ("Lv. 1") is dropped and the
+// name takes the column back, which is the difference between a name that
+// wraps to two lines and one that clips after six characters.
+const ICON_END: f32 = 40.0;
+const NAME_GAP: f32 = 10.0;
+const COOLTIME_GAP: f32 = 8.0;
 
 const MAX_DEPTH: usize = 16;
 
@@ -79,24 +116,55 @@ impl Screen {
     }
 
     fn discover(ctx: &StableClient<'_>) -> Option<Self> {
-        let card = find_node(ctx, "", CARD, 0)?;
-        let root = card.strip_suffix(CARD)?.trim_end_matches('.').to_string();
+        let card = find_node(ctx, "", CARD_PASSIVE, 0)?;
+        let root = card
+            .strip_suffix(CARD_PASSIVE)?
+            .trim_end_matches('.')
+            .to_string();
         let screen = Self { root };
-        ctx.ui_exists(&screen.node(CARD_DESC)).then_some(screen)
+        ctx.ui_exists(&screen.node(&join(CARD_PASSIVE, CHILD_DESC)))
+            .then_some(screen)
     }
 
-    /// Show or hide the attack card and re-spread the row to suit.
+    fn desc(&self, card: &str) -> String {
+        self.node(&join(card, CHILD_DESC))
+    }
+
+    /// Show whichever extra cards the champion has text for and re-spread the
+    /// row to suit: three cards with neither, four with one, five with both.
     ///
     /// Hidden is the layout file's own state, so the screen starts out as the
-    /// base game's three cards and only widens to four once a champion turns
-    /// up with attack text of its own.
-    fn arrange(&self, ctx: &mut StableClient<'_>, show_attack: bool) {
-        ctx.ui_set_properties(&self.node(CARD), &format!("visible: {show_attack};"));
+    /// base game's three cards and only widens once a champion turns up with
+    /// passive or attack text of its own.
+    fn arrange(&self, ctx: &mut StableClient<'_>, extras: Extras) {
+        // Anything the champion has no text for stays hidden, and takes no
+        // part in the row.
+        for (card, shown) in [
+            (CARD_PASSIVE, extras.passive),
+            (CARD_ATTACK, extras.attack),
+        ] {
+            ctx.ui_set_properties(&self.node(card), &format!("visible: {shown};"));
+        }
 
-        let frames: &[(f32, f32)] = if show_attack { &FOUR_CARDS } else { &THREE_CARDS };
-        let cards = show_attack.then_some(CARD).into_iter().chain(SKILL_CARDS);
+        let n = SKILL_CARDS.len() + extras.count();
+        let frames: &[(f32, f32)] = match n {
+            3 => &THREE_CARDS,
+            4 => &FOUR_CARDS,
+            _ => &FIVE_CARDS,
+        };
+        let five = n >= 5;
 
-        for (card, &(x, width)) in cards.zip(frames) {
+        let mut cards: Vec<&str> = Vec::with_capacity(n);
+        if extras.passive {
+            cards.push(CARD_PASSIVE);
+        }
+        if extras.attack {
+            cards.push(CARD_ATTACK);
+        }
+        cards.extend_from_slice(&SKILL_CARDS);
+
+        for (card, &(x, width)) in cards.iter().zip(frames) {
+            let is_extra = *card == CARD_PASSIVE || *card == CARD_ATTACK;
             ctx.ui_set_properties(&self.node(card), &format!("x: {x}px; width: {width}px;"));
 
             let body = width - CARD_PADDING;
@@ -105,19 +173,43 @@ impl Screen {
                 ctx.ui_set_properties(&self.node(&join(card, child)), &props);
             }
 
-            let (name_x, cooltime_x) = if show_attack {
-                (NAME_X_NARROW, body - COOLTIME_WIDTH)
-            } else {
-                (NAME_X_WIDE, COOLTIME_X_WIDE)
-            };
-            let name_width = body - NAME_TRAILING;
-            let props = format!("x: {name_x}px; width: {name_width}px;");
-            ctx.ui_set_properties(&self.node(&join(card, CARD_CHILD_NAME)), &props);
+            // A passive and a basic attack are not levelled, so the rank chip
+            // is meaningless on them at any width. At five wide there is no
+            // room for it on the skills either, and the name needs the column.
+            let show_rank = !(five || is_extra);
+            ctx.ui_set_properties(
+                &self.node(&join(card, CHILD_RANK)),
+                &format!("visible: {show_rank};"),
+            );
 
-            // The attack card has no cooldown chip to place - a basic attack
-            // fires on a rate, and the layout drops the slot outright.
-            let cooltime = self.node(&join(card, CARD_CHILD_COOLTIME));
-            if ctx.ui_exists(&cooltime) {
+            let name_x = if show_rank {
+                if n == 4 {
+                    NAME_X_NARROW
+                } else {
+                    NAME_X_WIDE
+                }
+            } else {
+                ICON_END + NAME_GAP
+            };
+            let cooltime = self.node(&join(card, CHILD_COOLTIME));
+            let has_cooltime = ctx.ui_exists(&cooltime);
+            // At three wide the cooldown sits between the rank chip and the
+            // name; from four wide it moves to the right edge.
+            let trailing = if has_cooltime && n >= 4 {
+                COOLTIME_WIDTH + COOLTIME_GAP
+            } else {
+                0.0
+            };
+            let name_width = body - name_x - trailing;
+            let props = format!("x: {name_x}px; width: {name_width}px;");
+            ctx.ui_set_properties(&self.node(&join(card, CHILD_NAME)), &props);
+
+            if has_cooltime {
+                let cooltime_x = if n == 3 {
+                    COOLTIME_X_WIDE
+                } else {
+                    body - COOLTIME_WIDTH
+                };
                 ctx.ui_set_properties(&cooltime, &format!("x: {cooltime_x}px;"));
             }
         }
@@ -132,15 +224,17 @@ struct State {
     search_wait: u32,
     by_skill_text: Vec<(Pattern, String)>,
     indexed: bool,
-    icons: HashMap<String, String>,
-    written: String,
+    /// Keyed by (champion, slot) where slot is "passive" or "attack".
+    icons: HashMap<(String, String), String>,
+    written_passive: String,
+    written_attack: String,
     selection: String,
-    /// Whether the row is currently arranged with the attack card shown.
-    /// False is the layout file's own state, so a fresh screen needs no work.
-    arranged: bool,
+    /// Which extra cards the row is currently laid out for. None is the
+    /// layout file's own state, so a fresh screen needs no work.
+    arranged: Option<Extras>,
 }
 
-struct ChampPassiveInfo {
+struct ChampInfoCards {
     state: Mutex<State>,
 }
 
@@ -320,8 +414,16 @@ fn top_level_string(json: &str, key: &str) -> Option<String> {
     None
 }
 
-// Search for icons at `<mod>/icons/<champion>_base_attack.png`, for all installed mods
-fn icon_index() -> HashMap<String, String> {
+/// The image each card looks for, paired with the slot it fills.
+const ICON_SUFFIXES: [(&str, &str); 2] =
+    [(PASSIVE_FIELD, "_passive.png"), (ATTACK_FIELD, "_base_attack.png")];
+
+/// Search for card icons in every installed mod, for both extra cards.
+///
+/// A champion is keyed by its mod id, which for the MLBB roster carries an
+/// `mlbb_` prefix, so the files are `mlbb_<champion>_passive.png` and
+/// `mlbb_<champion>_base_attack.png`.
+fn icon_index() -> HashMap<(String, String), String> {
     let mut icons = HashMap::new();
     for root in mod_roots() {
         for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
@@ -336,25 +438,26 @@ fn icon_index() -> HashMap<String, String> {
                 .flatten()
                 .flatten()
             {
-                let name = icon.file_name();
-                let Some(champion) = name
-                    .to_str()
-                    .and_then(|name| name.strip_suffix("_base_attack.png"))
-                else {
+                let Some(name) = icon.file_name().to_str().map(str::to_string) else {
                     continue;
                 };
-
-                // First mod wins
-                icons
-                    .entry(champion.to_string())
-                    .or_insert_with(|| format!("asset/{mod_id}/icons/{champion}_base_attack"));
+                for (slot, suffix) in ICON_SUFFIXES {
+                    let Some(champion) = name.strip_suffix(suffix) else {
+                        continue;
+                    };
+                    let stem = name.trim_end_matches(".png");
+                    // First mod wins
+                    icons
+                        .entry((champion.to_string(), slot.to_string()))
+                        .or_insert_with(|| format!("asset/{mod_id}/icons/{stem}"));
+                }
             }
         }
     }
     icons
 }
 
-impl ChampPassiveInfo {
+impl ChampInfoCards {
     fn description(ctx: &StableClient<'_>, champion: &str, field: &str) -> Option<String> {
         Self::text(ctx, &format!("description.{champion}.{field}"))
     }
@@ -374,16 +477,30 @@ impl ChampPassiveInfo {
             .filter(|text| !text.is_empty())
     }
 
-    fn attack(ctx: &StableClient<'_>, champion: &str) -> Option<String> {
-        Self::description(ctx, champion, "attack")
+    /// The body text for one of the two extra cards.
+    ///
+    /// Read straight out of i18n rather than through the champion's data block,
+    /// which is the whole point: a passive block carries no description
+    /// pointer, so the game never renders this text on its own even though the
+    /// localisations have had it all along.
+    fn card_text(ctx: &StableClient<'_>, champion: &str, field: &str) -> Option<String> {
+        Self::description(ctx, champion, field)
     }
 
-    // Check for custom skill name on basic attacks at `skill_name.<champion>.attack`
-    fn attack_name(ctx: &StableClient<'_>, champion: &str) -> String {
-        Self::text(ctx, &format!("skill_name.{champion}.attack"))
-            .or_else(|| Self::default_text(ctx, "attack_name"))
-            .or_else(|| Self::text(ctx, "stat.attack"))
-            .unwrap_or_default()
+    /// The heading for one of the two extra cards.
+    fn card_name(ctx: &StableClient<'_>, champion: &str, field: &str) -> String {
+        Self::text(ctx, &format!("skill_name.{champion}.{field}"))
+            .or_else(|| Self::default_text(ctx, &format!("{field}_name")))
+            .or_else(|| {
+                (field == ATTACK_FIELD).then(|| Self::text(ctx, "stat.attack")).flatten()
+            })
+            .unwrap_or_else(|| {
+                if field == ATTACK_FIELD {
+                    "Basic Attack".to_string()
+                } else {
+                    "Passive".to_string()
+                }
+            })
     }
 
     fn build_index(state: &mut State, ctx: &StableClient<'_>) {
@@ -425,7 +542,7 @@ impl ChampPassiveInfo {
     }
 }
 
-impl StableExtension for ChampPassiveInfo {
+impl StableExtension for ChampInfoCards {
     fn on_init(&self, ctx: &mut StableClient<'_>) {
         if let Ok(mut state) = self.state.lock() {
             Self::build_index(&mut state, ctx);
@@ -447,10 +564,11 @@ impl StableExtension for ChampPassiveInfo {
             }
             return;
         };
-        if !ctx.ui_exists(&screen.node(CARD_DESC)) {
-            state.written.clear();
+        if !ctx.ui_exists(&screen.desc(CARD_PASSIVE)) {
+            state.written_passive.clear();
+            state.written_attack.clear();
             state.selection.clear();
-            state.arranged = false;
+            state.arranged = None;
             state.screen = Some(screen);
             return;
         }
@@ -462,42 +580,54 @@ impl StableExtension for ChampPassiveInfo {
             .map(|text| strip_markup(&text))
             .unwrap_or_default();
         let found = Self::selected(&state, &shown);
+
+        let passive = found
+            .as_ref()
+            .and_then(|champion| Self::card_text(ctx, champion, PASSIVE_FIELD));
         let attack = found
             .as_ref()
-            .and_then(|champion| Self::attack(ctx, champion));
+            .and_then(|champion| Self::card_text(ctx, champion, ATTACK_FIELD));
 
-        // Only champions that ship their own attack text get a card; for the
-        // rest the screen is left as the base game's three.
-        let show_attack = attack.is_some();
-        if state.arranged != show_attack {
-            screen.arrange(ctx, show_attack);
-            state.arranged = show_attack;
+        // Only champions that ship their own passive or attack text get those
+        // cards; anything missing is dropped and the rest of the row spreads
+        // to fill the space, so the screen is never left with a blank card.
+        let extras = Extras {
+            passive: passive.is_some(),
+            attack: attack.is_some(),
+        };
+        if state.arranged != Some(extras) {
+            screen.arrange(ctx, extras);
+            state.arranged = Some(extras);
         }
 
-        let desc = attack.unwrap_or_default();
-        if state.written != desc {
-            ctx.ui_set_text(&screen.node(CARD_DESC), &desc);
-            state.written = desc;
+        let passive = passive.unwrap_or_default();
+        if state.written_passive != passive {
+            ctx.ui_set_text(&screen.desc(CARD_PASSIVE), &passive);
+            state.written_passive = passive;
+        }
+
+        let attack = attack.unwrap_or_default();
+        if state.written_attack != attack {
+            ctx.ui_set_text(&screen.desc(CARD_ATTACK), &attack);
+            state.written_attack = attack;
         }
 
         if state.selection != shown {
             let champion = found.unwrap_or_default();
-            let icon = state.icons.get(&champion).cloned().unwrap_or_default();
-            for node in [CARD_ICON, CARD_ICON_BG] {
-                let props = format!("visible: {};", !icon.is_empty());
-                ctx.ui_set_properties(&screen.node(node), &props);
-            }
-            if !icon.is_empty() {
-                let props = format!("source: \"{icon}\";");
-                ctx.ui_set_properties(&screen.node(CARD_ICON), &props);
-            }
+            for (card, field) in [(CARD_PASSIVE, PASSIVE_FIELD), (CARD_ATTACK, ATTACK_FIELD)] {
+                let key = (champion.clone(), field.to_string());
+                let icon = state.icons.get(&key).cloned().unwrap_or_default();
+                for child in [CHILD_ICON, CHILD_ICON_BG] {
+                    let props = format!("visible: {};", !icon.is_empty());
+                    ctx.ui_set_properties(&screen.node(&join(card, child)), &props);
+                }
+                if !icon.is_empty() {
+                    let props = format!("source: \"{icon}\";");
+                    ctx.ui_set_properties(&screen.node(&join(card, CHILD_ICON)), &props);
+                }
 
-            let name = Self::attack_name(ctx, &champion);
-            ctx.ui_set_text(&screen.node(CARD_NAME), &name);
-
-            let rank = Self::default_text(ctx, "attack_rank").unwrap_or_default();
-            if !rank.is_empty() {
-                ctx.ui_set_text(&screen.node(CARD_RANK), &rank);
+                let name = Self::card_name(ctx, &champion, field);
+                ctx.ui_set_text(&screen.node(&join(card, CHILD_NAME)), &name);
             }
 
             state.selection = shown;
@@ -510,10 +640,10 @@ impl StableExtension for ChampPassiveInfo {
 fn init(host: &StableHost) -> StableMod {
     host.log(
         LogLevel::Info,
-        "champ_attack_info_tfm2: basic attack card extension registering",
+        "mlbb_champ_info_tfm2: passive and basic attack card extension registering",
     );
     let mut reg = StableMod::new(MOD_ID);
-    reg.set_extension(ChampPassiveInfo {
+    reg.set_extension(ChampInfoCards {
         state: Mutex::new(State::default()),
     });
     reg

@@ -1718,6 +1718,107 @@ champion_info:champion_info_ui {
               size: 18;
 
               align_y: Center;
+              text: "Passive";
+            }
+          }
+
+          #bar:color {
+            color: #4a4c56ff;
+            width: 371px;
+            y: 50px;
+            height: 1px;
+          }
+
+          #desc:label {
+            @"asset/base/style/main#label";
+            x: 0px;
+
+            width: 371px;
+            height: 195px;
+
+            y: 60px;
+            anchor_y: 0;
+
+            size: 15;
+            line_height: 20;
+
+            text: "";
+          }
+        }
+      }
+
+      #attack:color {
+        visible: false;
+        width: 391px;
+        height: 275px;
+        x: 0px;
+        y: 100px;
+
+        color: #161721ff;
+        rounding: Uniform {
+          rounding: 12;
+        }
+
+        padding: {
+          left: 10px;
+          right: 10px;
+          top: 10px;
+          bottom: 10px;
+        }
+
+        #data:empty {
+          width: 371px;
+          height: 255px;
+
+          #icon_slot:empty {
+            width: 371px;
+            height: 40px;
+
+            #icon_bg:color {
+              anchor_x: 0;
+              pivot_x: 0;
+              color: #1d1f2cff;
+              width: 40px;
+              height: 40px;
+              y: 0px;
+            }
+
+            #icon:image {
+              anchor_x: 0;
+              pivot_x: 0;
+
+              width: 40px;
+              height: 40px;
+              y: 0px;
+            }
+
+            #text:label {
+              @"asset/base/style/main#bold_label";
+
+              width: 44px;
+              height: 40px;
+
+              x: 50px;
+              anchor_x: 0;
+
+              y: 0px;
+
+              text: "Lv.1";
+              size: 16;
+
+              align_x: Center;
+              align_y: Center;
+            }
+
+            #name:label {
+              @"asset/base/style/main#bold_label";
+              x: 104px;
+              width: 179px;
+              height: 40px;
+
+              size: 18;
+
+              align_y: Center;
               text: "#asset/base/text/champion?stat.attack";
             }
           }
