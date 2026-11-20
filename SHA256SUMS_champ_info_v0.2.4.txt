@@ -1,0 +1,3 @@
+081f1858e5b6a222afee402f1a867a33e020891fb169d738589a3111d795787d  GITHUB_RELEASE_v0.2.4.md
+e94ed227b4c3631717a07b56ad4f6c7afe4921da4f8bc738f03947216d8ed157  mlbb_champ_info_tfm2_v0.2.4.zip
+84ff4dc5a12fb99e6fbba16e4c89f8b7b5ddc9c9c589ccd849e0a9e0c210c0d8  mlbb_champ_info_tfm2_v0.2.4_source.zip
