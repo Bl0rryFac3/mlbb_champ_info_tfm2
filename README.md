@@ -59,6 +59,10 @@ id — for the MLBB roster that includes the `mlbb_` prefix
 
 MIT, as the original. See `LICENSE`.
 
+## v0.2.5
+
+Adds Yu Zhong’s basic attack and Cursing Touch icons, bringing coverage to all 27 heroes in MLBB Heroes v2.8.0. Descriptions and values follow the installed MLBB Heroes version.
+
 ## v0.2.4
 
 Includes passive and basic attack icons for all 26 heroes in MLBB Heroes v2.7.0. Eudora, Julian, Popol & Kupa, Granger, Hanzo and Atlas are new to this companion release. Card descriptions come from the installed hero mod so values and localization follow that mod.

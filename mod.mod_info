@@ -2,8 +2,8 @@
   "mod_id": "mlbb_champ_info_tfm2",
   "name": "MLBB Champ Info Cards: Passive + Basic Attack",
   "author": "shirograhm (original), Bl0rryFac3 (fork)",
-  "version": "0.2.4",
-  "description": "Shows basic attack and passive descriptions and icons in Champ Info. Covers all 26 heroes in MLBB Heroes v2.7.0.",
+  "version": "0.2.5",
+  "description": "Shows basic attack and passive descriptions and icons in Champ Info. Covers all 27 heroes in MLBB Heroes v2.8.0.",
   "last_updated": "2026-11-21",
   "dependencies": [
     {
