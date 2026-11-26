@@ -52,12 +52,20 @@ Optional name and icon:
 
 Icons are looked up as `icons/<champion_id>_passive.png` and
 `icons/<champion_id>_base_attack.png`, where `champion_id` is the champion's own
-id — for the MLBB roster that includes the `mlbb_` prefix
+id. For the MLBB roster that includes the `mlbb_` prefix
 (`mlbb_belerick_passive.png`).
 
 ## Licence
 
 MIT, as the original. See `LICENSE`.
+
+## v0.2.6
+
+Includes passive and basic attack icons for all 31 heroes in MLBB Heroes v3.1.0. Adds Lesley, Valir, Sun and X.Borg. Descriptions follow the installed hero mod.
+
+The companion prefers matching icons from the installed MLBB Heroes pack, with bundled icons as a fallback. It also rediscovers the Champ Info screen if it reopens at a different UI path.
+
+The four new passive icons use the Mobile Legends Wiki artwork for Lethal Shot, Ashing, Simian God and Firaga Armor. Lesley, Valir and Sun use frames from their MLBB Heroes basic attacks. X.Borg uses his released basic attack icon.
 
 ## v0.2.5
 
@@ -69,7 +77,11 @@ Includes passive and basic attack icons for all 26 heroes in MLBB Heroes v2.7.0.
 
 ### Install on Windows
 
-Use Teamfight Manager 2 0.7.3 or newer. Close the game and extract the release ZIP into the game's `mods` directory. The mod's manifest should be at `mods/mlbb_champ_info_tfm2/mod.mod_info`. Enable the companion alongside MLBB Heroes. Open a hero's Champ Info to see the five cards.
+Use Teamfight Manager 2 0.7.3 or newer. This build uses the 0.7.4 stable SDK.
+Close the game and move the previous companion folder out of `mods` as a backup.
+Extract the Windows ZIP into the game's `mods` directory. The manifest should be
+at `mods/mlbb_champ_info_tfm2/mod.mod_info`. Enable the companion alongside MLBB
+Heroes, then open Champ Info. Use one Champ Info layout mod at a time.
 
 ### Build from source
 

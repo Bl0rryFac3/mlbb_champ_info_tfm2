@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 const MOD_ID: &str = "mlbb_champ_info_tfm2";
+const HEROES_MOD_ID: &str = "mlbb_heroes";
 
 const TEXT_ASSET: &str = "asset/base/text/champion";
 const DEFAULTS_ASSET: &str = "asset/mlbb_champ_info_tfm2/text/defaults";
@@ -90,21 +91,6 @@ fn join(path: &str, child: &str) -> String {
     }
 }
 
-/// Depth-first search for node by id
-fn find_node(ctx: &StableClient<'_>, path: &str, target: &str, depth: usize) -> Option<String> {
-    if depth > MAX_DEPTH {
-        return None;
-    }
-    ctx.ui_child_names(path).into_iter().find_map(|child| {
-        let child_path = join(path, &child);
-        if child == target {
-            Some(child_path)
-        } else {
-            find_node(ctx, &child_path, target, depth + 1)
-        }
-    })
-}
-
 // The container where the skill cards sit
 struct Screen {
     root: String,
@@ -115,15 +101,23 @@ impl Screen {
         join(&self.root, suffix)
     }
 
-    fn discover(ctx: &StableClient<'_>) -> Option<Self> {
-        let card = find_node(ctx, "", CARD_PASSIVE, 0)?;
-        let root = card
-            .strip_suffix(CARD_PASSIVE)?
-            .trim_end_matches('.')
-            .to_string();
-        let screen = Self { root };
-        ctx.ui_exists(&screen.node(&join(CARD_PASSIVE, CHILD_DESC)))
-            .then_some(screen)
+    fn discover(ctx: &StableClient<'_>, path: &str, depth: usize) -> Option<Self> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        let children = ctx.ui_child_names(path);
+        if children.iter().any(|child| child == CARD_PASSIVE) {
+            let screen = Self { root: path.into() };
+            if [CARD_PASSIVE, CARD_ATTACK, SKILL_CARDS[0]]
+                .iter()
+                .all(|card| ctx.ui_exists(&screen.desc(card)))
+            {
+                return Some(screen);
+            }
+        }
+        children
+            .iter()
+            .find_map(|child| Self::discover(ctx, &join(path, child), depth + 1))
     }
 
     fn desc(&self, card: &str) -> String {
@@ -139,10 +133,7 @@ impl Screen {
     fn arrange(&self, ctx: &mut StableClient<'_>, extras: Extras) {
         // Anything the champion has no text for stays hidden, and takes no
         // part in the row.
-        for (card, shown) in [
-            (CARD_PASSIVE, extras.passive),
-            (CARD_ATTACK, extras.attack),
-        ] {
+        for (card, shown) in [(CARD_PASSIVE, extras.passive), (CARD_ATTACK, extras.attack)] {
             ctx.ui_set_properties(&self.node(card), &format!("visible: {shown};"));
         }
 
@@ -341,7 +332,12 @@ fn mod_roots() -> Vec<PathBuf> {
     let mut roots = vec![game.join("mods")];
     // `<library>/steamapps/common/<game>` -> `<library>/steamapps/workshop/...`
     if let Some(steamapps) = game.parent().and_then(Path::parent) {
-        roots.push(steamapps.join("workshop").join("content").join(STEAM_APP_ID));
+        roots.push(
+            steamapps
+                .join("workshop")
+                .join("content")
+                .join(STEAM_APP_ID),
+        );
     }
     roots
 }
@@ -398,10 +394,8 @@ fn top_level_string(json: &str, key: &str) -> Option<String> {
                 i = next;
                 // A `:` after it makes it a key; otherwise it is the value of
                 // whichever key came last.
-                let colon = bytes[i..]
-                    .iter()
-                    .find(|byte| !byte.is_ascii_whitespace())
-                    == Some(&b':');
+                let colon =
+                    bytes[i..].iter().find(|byte| !byte.is_ascii_whitespace()) == Some(&b':');
                 if colon {
                     last_key = text;
                 } else if depth == 1 && last_key == key {
@@ -415,46 +409,75 @@ fn top_level_string(json: &str, key: &str) -> Option<String> {
 }
 
 /// The image each card looks for, paired with the slot it fills.
-const ICON_SUFFIXES: [(&str, &str); 2] =
-    [(PASSIVE_FIELD, "_passive.png"), (ATTACK_FIELD, "_base_attack.png")];
+const ICON_SUFFIXES: [(&str, &str); 2] = [
+    (PASSIVE_FIELD, "_passive.png"),
+    (ATTACK_FIELD, "_base_attack.png"),
+];
 
-/// Search for card icons in every installed mod, for both extra cards.
-///
-/// A champion is keyed by its mod id, which for the MLBB roster carries an
-/// `mlbb_` prefix, so the files are `mlbb_<champion>_passive.png` and
-/// `mlbb_<champion>_base_attack.png`.
-fn icon_index() -> HashMap<(String, String), String> {
+type IconKey = (String, String);
+
+/// Prefer the current hero pack, then this companion's copies, then other
+/// installed mods. Give local installs precedence within each source.
+fn icon_index(roots: &[PathBuf]) -> HashMap<IconKey, String> {
     let mut icons = HashMap::new();
-    for root in mod_roots() {
+    for (root_order, root) in roots.iter().enumerate() {
         for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
             let dir = entry.path();
-            let Some(mod_id) = mod_id_at(&dir).or_else(|| {
-                entry.file_name().to_str().map(str::to_string)
-            }) else {
+            let Some(mod_id) =
+                mod_id_at(&dir).or_else(|| entry.file_name().to_str().map(str::to_string))
+            else {
                 continue;
+            };
+            let mod_order = match mod_id.as_str() {
+                HEROES_MOD_ID => 0,
+                MOD_ID => 1,
+                _ => 2,
             };
             for icon in std::fs::read_dir(dir.join("icons"))
                 .into_iter()
                 .flatten()
                 .flatten()
             {
-                let Some(name) = icon.file_name().to_str().map(str::to_string) else {
+                let filename = icon.file_name();
+                let Some(name) = filename.to_str() else {
                     continue;
                 };
-                for (slot, suffix) in ICON_SUFFIXES {
-                    let Some(champion) = name.strip_suffix(suffix) else {
-                        continue;
-                    };
-                    let stem = name.trim_end_matches(".png");
-                    // First mod wins
-                    icons
-                        .entry((champion.to_string(), slot.to_string()))
-                        .or_insert_with(|| format!("asset/{mod_id}/icons/{stem}"));
+                let canonical = ICON_SUFFIXES.iter().find_map(|&(slot, suffix)| {
+                    name.strip_suffix(suffix).map(|id| (id, slot, false))
+                });
+                let alternate = || {
+                    if mod_id == HEROES_MOD_ID {
+                        name.strip_suffix("_attack.png")
+                            .map(|id| (id, ATTACK_FIELD, true))
+                    } else {
+                        None
+                    }
+                };
+                let Some((champion, slot, legacy)) = canonical.or_else(alternate) else {
+                    continue;
+                };
+                if champion.is_empty() || !icon.path().is_file() {
+                    continue;
+                }
+                let key = (champion.to_string(), slot.to_string());
+                let stem = name.trim_end_matches(".png");
+                let candidate = (
+                    mod_order,
+                    root_order,
+                    legacy,
+                    format!("asset/{mod_id}/icons/{stem}"),
+                );
+                let preferred = icons.entry(key).or_insert_with(|| candidate.clone());
+                if candidate < *preferred {
+                    *preferred = candidate;
                 }
             }
         }
     }
     icons
+        .into_iter()
+        .map(|(key, (_, _, _, asset))| (key, asset))
+        .collect()
 }
 
 impl ChampInfoCards {
@@ -474,7 +497,7 @@ impl ChampInfoCards {
         let key = format!("{asset}?{key}");
         ctx.i18n(&key)
             .or_else(|| ctx.i18n(&format!("#{key}")))
-            .filter(|text| !text.is_empty())
+            .filter(|text| !text.trim().is_empty())
     }
 
     /// The body text for one of the two extra cards.
@@ -490,9 +513,20 @@ impl ChampInfoCards {
     /// The heading for one of the two extra cards.
     fn card_name(ctx: &StableClient<'_>, champion: &str, field: &str) -> String {
         Self::text(ctx, &format!("skill_name.{champion}.{field}"))
+            .or_else(|| {
+                // These titles occur in the shipped descriptions, but v3.1.0
+                // has no separate title key for the companion to look up.
+                match (champion, field) {
+                    ("mlbb_sun", PASSIVE_FIELD) => Some("Simian God".into()),
+                    ("mlbb_xborg", PASSIVE_FIELD) => Some("Firaga Guard".into()),
+                    _ => None,
+                }
+            })
             .or_else(|| Self::default_text(ctx, &format!("{field}_name")))
             .or_else(|| {
-                (field == ATTACK_FIELD).then(|| Self::text(ctx, "stat.attack")).flatten()
+                (field == ATTACK_FIELD)
+                    .then(|| Self::text(ctx, "stat.attack"))
+                    .flatten()
             })
             .unwrap_or_else(|| {
                 if field == ATTACK_FIELD {
@@ -512,7 +546,7 @@ impl ChampInfoCards {
             return;
         }
         state.indexed = true;
-        state.icons = icon_index();
+        state.icons = icon_index(&mod_roots());
         state.by_skill_text = roster
             .into_iter()
             .filter_map(|champion| {
@@ -526,12 +560,12 @@ impl ChampInfoCards {
         if shown.is_empty() {
             return None;
         }
-        let exact = state
+        let mut exact = state
             .by_skill_text
             .iter()
-            .find(|(skill, _)| skill.anchor_start && skill.anchor_end && skill.parts == [shown]);
-        if let Some((_, champion)) = exact {
-            return Some(champion.clone());
+            .filter(|(skill, _)| skill.anchor_start && skill.anchor_end && skill.parts == [shown]);
+        if let Some((_, champion)) = exact.next() {
+            return exact.next().is_none().then(|| champion.clone());
         }
         let mut hits = state
             .by_skill_text
@@ -559,7 +593,7 @@ impl StableExtension for ChampInfoCards {
                 Some(remaining) => state.search_wait = remaining,
                 None => {
                     state.search_wait = SEARCH_INTERVAL_FRAMES;
-                    state.screen = Screen::discover(ctx);
+                    state.screen = Screen::discover(ctx, "", 0);
                 }
             }
             return;
@@ -569,7 +603,7 @@ impl StableExtension for ChampInfoCards {
             state.written_attack.clear();
             state.selection.clear();
             state.arranged = None;
-            state.screen = Some(screen);
+            state.search_wait = 0;
             return;
         }
 
@@ -653,7 +687,12 @@ declare_stable_mod!(init);
 
 #[cfg(test)]
 mod tests {
-    use super::top_level_string;
+    use super::*;
+    use std::cell::Cell;
+    use std::ffi::c_void;
+    use std::mem::size_of;
+    use std::ptr::{copy_nonoverlapping, null};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     /// The manifest that broke the Workshop icon lookup: `dependencies` carries
     /// its own `mod_id`, and it is serialised before the manifest's own.
@@ -692,5 +731,195 @@ mod tests {
     #[test]
     fn missing_key_is_none() {
         assert_eq!(top_level_string(r#"{"name": "x"}"#, "mod_id"), None);
+    }
+
+    #[test]
+    fn shared_skill_text_cannot_claim_someone_elses_cards() {
+        let mut state = State {
+            by_skill_text: vec![
+                (Pattern::new("Deal damage."), "first".into()),
+                (Pattern::new("Deal damage."), "second".into()),
+                (Pattern::new("Deal {value} damage."), "third".into()),
+            ],
+            ..State::default()
+        };
+        assert_eq!(ChampInfoCards::selected(&state, "Deal damage."), None);
+        assert_eq!(
+            ChampInfoCards::selected(&state, "Deal 150 damage.").as_deref(),
+            Some("third")
+        );
+        state.by_skill_text.remove(1);
+        assert_eq!(
+            ChampInfoCards::selected(&state, "Deal damage.").as_deref(),
+            Some("first")
+        );
+    }
+
+    #[test]
+    fn icons_choose_matching_hero_pack_then_companion_then_other_mod() {
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("champ-info-{time}"));
+        let local = dir.join("local");
+        let workshop = dir.join("workshop");
+        let write_icons = |path: &Path, id: &str, names: &[&str]| {
+            let icon_dir = path.join("icons");
+            std::fs::create_dir_all(&icon_dir).unwrap();
+            std::fs::write(path.join("mod.mod_info"), format!(r#"{{"mod_id":"{id}"}}"#)).unwrap();
+            for name in names {
+                std::fs::write(icon_dir.join(name), []).unwrap();
+            }
+        };
+        write_icons(
+            &local.join("compatibility"),
+            "other_mod",
+            &[
+                "mlbb_xborg_passive.png",
+                "guest_passive.png",
+                "guest_attack.png",
+            ],
+        );
+        write_icons(
+            &local.join(MOD_ID),
+            MOD_ID,
+            &[
+                "mlbb_sun_passive.png",
+                "mlbb_xborg_passive.png",
+                "mlbb_xborg_base_attack.png",
+            ],
+        );
+        write_icons(
+            &workshop.join("12345"),
+            HEROES_MOD_ID,
+            &["mlbb_xborg_passive.png", "mlbb_xborg_attack.png"],
+        );
+        let icons = icon_index(&[local, workshop]);
+        std::fs::remove_dir_all(dir).unwrap();
+
+        let asset = |champion: &str, kind: &str| {
+            icons
+                .get(&(champion.into(), kind.into()))
+                .map(String::as_str)
+        };
+        assert_eq!(
+            asset("mlbb_xborg", PASSIVE_FIELD),
+            Some("asset/mlbb_heroes/icons/mlbb_xborg_passive"),
+        );
+        assert_eq!(
+            asset("mlbb_xborg", ATTACK_FIELD),
+            Some("asset/mlbb_heroes/icons/mlbb_xborg_attack"),
+        );
+        assert_eq!(
+            asset("mlbb_sun", PASSIVE_FIELD),
+            Some("asset/mlbb_champ_info_tfm2/icons/mlbb_sun_passive"),
+        );
+        assert_eq!(
+            asset("guest", PASSIVE_FIELD),
+            Some("asset/other_mod/icons/guest_passive")
+        );
+        assert_eq!(asset("guest", ATTACK_FIELD), None);
+    }
+
+    struct MockUi {
+        screen: Cell<&'static str>,
+    }
+
+    impl MockUi {
+        fn children(&self, path: &str) -> Vec<&str> {
+            match path {
+                "" => vec!["unrelated", self.screen.get()],
+                "unrelated" => vec![CARD_PASSIVE],
+                p if p == self.screen.get() => vec![CARD_PASSIVE, CARD_ATTACK, "skill1"],
+                _ => Vec::new(),
+            }
+        }
+    }
+
+    unsafe fn path_from_raw(path: *const u8, len: usize) -> String {
+        String::from_utf8_lossy(std::slice::from_raw_parts(path, len)).into_owned()
+    }
+
+    unsafe extern "C" fn exists(state: *const c_void, path: *const u8, len: usize) -> bool {
+        let ui = &*state.cast::<MockUi>();
+        let path = path_from_raw(path, len);
+        path == "unrelated.passive.data.desc"
+            || [CARD_PASSIVE, CARD_ATTACK, "skill1"]
+                .iter()
+                .any(|card| path == format!("{}.{card}.data.desc", ui.screen.get()))
+    }
+
+    unsafe extern "C" fn child_count(
+        state: *const c_void,
+        path: *const u8,
+        len: usize,
+        count: *mut usize,
+    ) -> bool {
+        let ui = &*state.cast::<MockUi>();
+        *count = ui.children(&path_from_raw(path, len)).len();
+        true
+    }
+
+    unsafe extern "C" fn child_name(
+        state: *const c_void,
+        path: *const u8,
+        len: usize,
+        index: usize,
+        buf: *mut u8,
+        cap: usize,
+        written: *mut usize,
+    ) -> bool {
+        let ui = &*state.cast::<MockUi>();
+        let names = ui.children(&path_from_raw(path, len));
+        let Some(name) = names.get(index) else {
+            return false;
+        };
+        *written = name.len();
+        if !buf.is_null() {
+            if cap < name.len() {
+                return false;
+            }
+            copy_nonoverlapping(name.as_ptr(), buf, name.len());
+        }
+        true
+    }
+
+    #[test]
+    fn finds_the_card_row_again_after_the_screen_moves() {
+        // All slots in the SDK table are optional function pointers except size.
+        let mut ui: UiVtableV1 = unsafe { std::mem::zeroed() };
+        ui.size = size_of::<UiVtableV1>();
+        ui.query_exists = Some(exists);
+        ui.child_count = Some(child_count);
+        ui.child_name_at = Some(child_name);
+        let mock = MockUi {
+            screen: Cell::new("first"),
+        };
+        let mut raw = ClientCtxV1 {
+            size: size_of::<ClientCtxV1>(),
+            ui: &ui,
+            scene: null(),
+            asset: null(),
+            save: null(),
+            net: null(),
+            state: std::ptr::from_ref(&mock).cast_mut().cast(),
+            data: null(),
+            draw: null(),
+        };
+        let extension = ChampInfoCards {
+            state: Mutex::new(State::default()),
+        };
+        let mut update = || {
+            // The mock and table stay live for this simulated callback.
+            let mut client = unsafe { StableClient::from_raw(&mut raw).unwrap() };
+            extension.post_update(&mut client, 0);
+            let state = extension.state.lock().unwrap();
+            state.screen.as_ref().map(|screen| screen.root.clone())
+        };
+        assert_eq!(update().as_deref(), Some("first"));
+        mock.screen.set("reopened");
+        assert_eq!(update(), None);
+        assert_eq!(update().as_deref(), Some("reopened"));
     }
 }

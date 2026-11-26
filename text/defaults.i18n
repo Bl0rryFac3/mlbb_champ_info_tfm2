@@ -59,6 +59,10 @@
         "attack_rank": "Lv. 1",
         "attack_desc": "造成<#ff9028ff><i#asset/base/ui/banpick/champion_stat_icon:ad_0>100%攻击力<>点<#ff9028ff>物理伤害<>。"
     },
+    "zh-hant": {
+        "attack_name": "普通攻擊",
+        "passive_name": "被動"
+    },
     "ru": {
         "attack_name": "Базовая атака",
         "passive_name": "Пассивный",
